@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+packages/viewer/public/data/
+.work/
+.env
+.env.*
+!.env.example
+*.code-workspace
+.vscode/

@@ -1,0 +1,131 @@
+name: Sync Upstream & Translate
+
+# Every step is a local command. Reproduce this workflow (without pushing) with:
+#   bun run job:sync --fail-fast
+# GitHub provides secrets, optional vars, and the manual-dispatch overrides below.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: "Override SYNC_MAX_MINUTES before checkpointing"
+        required: false
+        default: ""
+        type: string
+      max_batches:
+        description: "Override SYNC_MAX_BATCHES for bounded runs"
+        required: false
+        default: ""
+        type: string
+      ai_model:
+        description: "Override AI_MODEL identifier"
+        required: false
+        default: ""
+        type: string
+      data_repo:
+        description: "Target data repository owner/name (default: <owner>/riscv-isa-manual-cn-data)"
+        required: false
+        default: ""
+        type: string
+      chain_depth:
+        description: "Internal self-dispatch counter (leave default)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Check upstream HEAD for cache key
+        id: upstream
+        env:
+          FALLBACK_KEY: ${{ github.run_id }}
+        run: |
+          sha=$(git ls-remote https://github.com/riscv/riscv-isa-manual.git HEAD 2>/dev/null | cut -f1 || true)
+          echo "sha=${sha:-$FALLBACK_KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore upstream mirror (.work/upstream.git)
+        uses: actions/cache@v6
+        with:
+          path: .work/upstream.git
+          key: upstream-mirror-${{ steps.upstream.outputs.sha }}
+          restore-keys: upstream-mirror-
+
+      - run: bun install --frozen-lockfile
+
+      - name: bun run job:sync --fail-fast
+        id: job
+        run: bun run job:sync --fail-fast
+        env:
+          # Secrets
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DOTENV: ${{ secrets.DOTENV || vars.DOTENV }}
+          # OpenAI / OpenAI-compatible translation settings (blank values are ignored)
+          AI_MODEL: ${{ inputs.ai_model || vars.AI_MODEL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || vars.OPENAI_BASE_URL }}
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL || vars.AI_BASE_URL }}
+          AI_REASONING_EFFORT: ${{ vars.AI_REASONING_EFFORT }}
+          AI_CONCURRENCY: ${{ vars.AI_CONCURRENCY }}
+          AI_MAX_INPUT_TOKENS: ${{ vars.AI_MAX_INPUT_TOKENS }}
+          AI_MAX_OUTPUT_TOKENS: ${{ vars.AI_MAX_OUTPUT_TOKENS }}
+          # Sync budgets & target repository
+          DATA_REPO: ${{ inputs.data_repo || vars.DATA_REPO }}
+          BASELINE_DATE: ${{ vars.BASELINE_DATE }}
+          SYNC_MAX_MINUTES: ${{ inputs.max_minutes || vars.SYNC_MAX_MINUTES }}
+          SYNC_MAX_BATCHES: ${{ inputs.max_batches || vars.SYNC_MAX_BATCHES }}
+          VERBOSE: ${{ vars.VERBOSE }}
+          # LangSmith tracing
+          LANGSMITH_TRACING: ${{ vars.LANGSMITH_TRACING }}
+          LANGSMITH_ENDPOINT: ${{ vars.LANGSMITH_ENDPOINT }}
+          LANGSMITH_AGENT_ID: ${{ vars.LANGSMITH_AGENT_ID }}
+
+      # GitHub-only glue: continue in a fresh run when the time budget ran out.
+      - name: Dispatch next sync run if work remains
+        if: steps.job.outputs.has_remaining == 'true' && steps.job.outputs.pushed == 'true' && !inputs.max_batches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_MAX_MINUTES: ${{ inputs.max_minutes }}
+          IN_MAX_BATCHES: ${{ inputs.max_batches }}
+          IN_AI_MODEL: ${{ inputs.ai_model }}
+          IN_DATA_REPO: ${{ inputs.data_repo }}
+          IN_CHAIN_DEPTH: ${{ inputs.chain_depth || '0' }}
+        run: |
+          depth="${IN_CHAIN_DEPTH:-0}"
+          case "$depth" in
+            ''|*[!0-9]*) depth=0 ;;
+          esac
+          if [ "$depth" -ge 10 ]; then
+            echo "::notice::Reached max self-dispatch chain depth ($depth); remaining work will continue on the next scheduled run."
+            exit 0
+          fi
+          gh workflow run sync.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f max_minutes="$IN_MAX_MINUTES" -f max_batches="$IN_MAX_BATCHES" \
+            -f ai_model="$IN_AI_MODEL" \
+            -f data_repo="$IN_DATA_REPO" -f chain_depth="$((depth + 1))"

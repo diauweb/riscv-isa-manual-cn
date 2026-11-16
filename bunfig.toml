@@ -1,0 +1,8 @@
+# Bun must never auto-load `.env` files on its own. Configuration is resolved
+# exclusively by `packages/pipeline/src/config.ts` (.env + .env.local
+# + DOTENV + shell env), so the CLI, the viewer, tests and CI all agree.
+env = false
+
+[test]
+# Make tests hermetic: ignore the developer's personal .env / .env.local.
+preload = ["./packages/pipeline/test/preload.ts"]

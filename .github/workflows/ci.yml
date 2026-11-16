@@ -1,0 +1,72 @@
+name: CI
+
+# Every step is a local command. Reproduce this workflow with:  bun run job:ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - run: bun install --frozen-lockfile
+
+      - name: bun run job:ci
+        run: bun run job:ci
+
+  # GitHub-only glue: ask the data repository to redeploy the viewer when engine code
+  # that affects the site changed on main.
+  trigger-deploy:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Dispatch data repository deploy
+        env:
+          GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          BEFORE: ${{ github.event.before }}
+          DATA_REPO: ${{ vars.DATA_REPO || format('{0}/riscv-isa-manual-cn-data', github.repository_owner) }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "DATA_REPO_TOKEN not configured; skipping."; exit 0; fi
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null && \
+             git diff --quiet "$BEFORE" HEAD -- packages/ package.json bun.lock; then
+            echo "No site-affecting changes; skipping."; exit 0
+          fi
+          if err=$(gh workflow run deploy.yml --repo "$DATA_REPO" 2>&1); then
+            echo "Dispatched deploy.yml on $DATA_REPO."
+          elif echo "$err" | grep -qiE 'HTTP 404|not found|could not find any workflows'; then
+            echo "::warning::Data repository or deploy.yml not found on $DATA_REPO; skipping ($err)."
+          else
+            echo "::error::Failed to dispatch deploy.yml on $DATA_REPO: $err"
+            exit 1
+          fi

@@ -1,0 +1,32 @@
+{
+  "name": "riscv-isa-manual-cn",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "setup": "bun install && bun packages/pipeline/src/cli.ts setup",
+    "config": "bun packages/pipeline/src/cli.ts config",
+    "workspace": "bun packages/pipeline/src/cli.ts workspace",
+    "sync": "bun packages/pipeline/src/cli.ts sync",
+    "validate": "bun packages/pipeline/src/cli.ts validate-data",
+    "build-site": "bun packages/pipeline/src/cli.ts build-site",
+    "build": "bun packages/pipeline/src/cli.ts build",
+    "preview": "bun packages/pipeline/src/cli.ts preview",
+    "dev": "bun packages/pipeline/src/cli.ts dev",
+    "publish:data": "bun packages/pipeline/src/cli.ts publish:data",
+    "typecheck": "bun run --cwd packages/schema typecheck && bun run --cwd packages/pipeline typecheck && bun run --cwd packages/viewer typecheck",
+    "test": "bun test",
+    "check": "bun packages/pipeline/src/cli.ts check",
+    "job:ci": "bun packages/pipeline/src/cli.ts job ci",
+    "job:sync": "bun packages/pipeline/src/cli.ts job sync",
+    "job:deploy": "bun packages/pipeline/src/cli.ts job deploy"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.7.0"
+  }
+}

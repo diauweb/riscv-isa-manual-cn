@@ -1,0 +1,18 @@
+#!/bin/sh
+# Enforces Conventional Commits: <type>[optional scope][!]: <description>
+msg_file="$1"
+header=$(grep -v '^[[:space:]]*#' "$msg_file" | sed '/^[[:space:]]*$/d' | head -n 1)
+
+case "$header" in
+  "Merge "*|"Revert \""*) exit 0 ;;
+esac
+
+if ! printf '%s\n' "$header" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_./-]+\))?!?: .+'; then
+  echo "ERROR: Commit message must follow Conventional Commits:" >&2
+  echo "  <type>[optional scope]: <description>" >&2
+  echo "  Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert" >&2
+  echo "  Examples: feat(viewer): add dark mode toggle" >&2
+  echo "            fix(pipeline): handle empty bibliography" >&2
+  echo "  Got: $header" >&2
+  exit 1
+fi
