@@ -16,6 +16,7 @@ import {
   fetchSiteTree,
   fetchUnitMetaShard,
   getDemoSiteIndex,
+  siteDataVersion,
 } from "./utils/dataClient";
 import { buildCompareRows } from "./utils/diff";
 import { absoluteUrl, formatHash, parseHash, useHashRoute, type Route } from "./lib/route";
@@ -53,6 +54,8 @@ function useSiteTree(
   treeHash: string | undefined,
   index: SiteIndex | null,
   demoMode: boolean,
+  recoverStaleIndex: () => Promise<boolean>,
+  recoveryEpoch: number,
 ): { volumes: SiteVolume[]; loading: boolean; error: string | null } {
   const isDefault = Boolean(index && treeHash && treeHash === index.default_tree_hash);
   const [state, setState] = useState<{
@@ -75,20 +78,23 @@ function useSiteTree(
           !cancelled &&
           setState({ hash: treeHash, volumes: tree.volumes, loading: false, error: null }),
       )
-      .catch(
-        (err) =>
-          !cancelled &&
-          setState({
-            hash: treeHash,
-            volumes: [],
-            loading: false,
-            error: err instanceof Error ? err.message : String(err),
-          }),
-      );
+      .catch(async (err) => {
+        if (cancelled) return;
+        if (!demoMode && err instanceof DataNotFoundError) {
+          const recovered = await recoverStaleIndex();
+          if (cancelled || recovered) return;
+        }
+        setState({
+          hash: treeHash,
+          volumes: [],
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     return () => {
       cancelled = true;
     };
-  }, [treeHash, isDefault, index, demoMode]);
+  }, [treeHash, isDefault, index, demoMode, recoverStaleIndex, recoveryEpoch]);
 
   if (isDefault && index) {
     return { volumes: index.default_volumes, loading: false, error: null };
@@ -101,7 +107,12 @@ function useSiteTree(
   };
 }
 
-function useResolvedChapter(entry: SiteChapterEntry | undefined, demoMode: boolean) {
+function useResolvedChapter(
+  entry: SiteChapterEntry | undefined,
+  demoMode: boolean,
+  recoverStaleIndex: () => Promise<boolean>,
+  recoveryEpoch: number,
+) {
   const key = entry ? `${entry.struct_hash}:${entry.pack_hash}` : undefined;
   const [state, setState] = useState<{
     key?: string;
@@ -119,20 +130,23 @@ function useResolvedChapter(entry: SiteChapterEntry | undefined, demoMode: boole
     setState((s) => ({ ...s, key, loading: true, error: null }));
     fetchResolvedChapter(entry, demoMode)
       .then((bundle) => !cancelled && setState({ key, bundle, loading: false, error: null }))
-      .catch(
-        (err) =>
-          !cancelled &&
-          setState({
-            key,
-            bundle: null,
-            loading: false,
-            error: err instanceof Error ? err.message : String(err),
-          }),
-      );
+      .catch(async (err) => {
+        if (cancelled) return;
+        if (!demoMode && err instanceof DataNotFoundError) {
+          const recovered = await recoverStaleIndex();
+          if (cancelled || recovered) return;
+        }
+        setState({
+          key,
+          bundle: null,
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     return () => {
       cancelled = true;
     };
-  }, [entry, key, demoMode]);
+  }, [entry, key, demoMode, recoverStaleIndex, recoveryEpoch]);
 
   // Never hand out a stale chapter for a different structure/pack key.
   const fresh = state.key === key;
@@ -148,10 +162,11 @@ function useCompareLineage(
   baseBundle: ResolvedChapter | null,
   targetBundle: ResolvedChapter | null,
   demoMode: boolean,
+  dataVersion: string,
 ): Map<string, string> | undefined {
   const lineageKey =
     comparing && baseBundle && targetBundle
-      ? `${baseBundle.struct_hash}:${baseBundle.pack_hash}:${targetBundle.struct_hash}:${targetBundle.pack_hash}`
+      ? `${dataVersion}:${baseBundle.struct_hash}:${baseBundle.pack_hash}:${targetBundle.struct_hash}:${targetBundle.pack_hash}`
       : undefined;
   const [state, setState] = useState<{ key?: string; map?: Map<string, string> }>({});
 
@@ -229,6 +244,46 @@ export const App: React.FC = () => {
   const [indexLoading, setIndexLoading] = useState(true);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [demoMode, setDemoMode] = useState(false);
+  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
+  const indexRef = useRef<SiteIndex | null>(null);
+  indexRef.current = index;
+  const recoveryInFlight = useRef<Promise<boolean> | null>(null);
+  const lastRecoveryAt = useRef(0);
+
+  const dataVersion = useMemo(
+    () => (demoMode ? "demo" : index ? siteDataVersion(index) : ""),
+    [demoMode, index],
+  );
+
+  // If a long-lived tab hits a 404 on a replaced chapter pack/structure/tree after a new
+  // Pages deploy, bypass browser & edge caches to refresh `index.json` transparently.
+  const recoverStaleIndex = useCallback((): Promise<boolean> => {
+    if (demoMode) return Promise.resolve(false);
+    if (recoveryInFlight.current) return recoveryInFlight.current;
+    const now = Date.now();
+    if (now - lastRecoveryAt.current < 5_000) {
+      return Promise.resolve(false);
+    }
+    lastRecoveryAt.current = now;
+    const prevVersion = indexRef.current ? siteDataVersion(indexRef.current) : null;
+    const task = fetchSiteIndex({ bustCache: true })
+      .then((fresh) => {
+        const nextVersion = siteDataVersion(fresh);
+        if (nextVersion !== prevVersion) {
+          indexRef.current = fresh;
+          setIndex(fresh);
+          setRecoveryEpoch((n) => n + 1);
+          return true;
+        }
+        return false;
+      })
+      .catch(() => false)
+      .finally(() => {
+        recoveryInFlight.current = null;
+      });
+    recoveryInFlight.current = task;
+    return task;
+  }, [demoMode]);
 
   const { route, navKey, navigate } = useHashRoute();
   const { settings, update } = useReaderSettings();
@@ -277,8 +332,20 @@ export const App: React.FC = () => {
   );
   const comparing = Boolean(baseSnapshot && snapshot);
 
-  const targetTree = useSiteTree(snapshot?.tree_hash, index, demoMode);
-  const baseTree = useSiteTree(comparing ? baseSnapshot?.tree_hash : undefined, index, demoMode);
+  const targetTree = useSiteTree(
+    snapshot?.tree_hash,
+    index,
+    demoMode,
+    recoverStaleIndex,
+    recoveryEpoch,
+  );
+  const baseTree = useSiteTree(
+    comparing ? baseSnapshot?.tree_hash : undefined,
+    index,
+    demoMode,
+    recoverStaleIndex,
+    recoveryEpoch,
+  );
 
   const volumes = useMemo(
     () => targetTree.volumes.filter((v) => v.chapters.length > 0),
@@ -299,9 +366,25 @@ export const App: React.FC = () => {
   const baseChapter = comparing ? findChapter(baseTree.volumes, route.volume, route.chapter) : undefined;
   const chapterMeta = chapter ?? baseChapter;
 
-  const target = useResolvedChapter(route.page === "chapter" ? chapter : undefined, demoMode);
-  const base = useResolvedChapter(comparing ? baseChapter : undefined, demoMode);
-  const lineageMap = useCompareLineage(comparing, base.bundle, target.bundle, demoMode);
+  const target = useResolvedChapter(
+    route.page === "chapter" ? chapter : undefined,
+    demoMode,
+    recoverStaleIndex,
+    recoveryEpoch,
+  );
+  const base = useResolvedChapter(
+    comparing ? baseChapter : undefined,
+    demoMode,
+    recoverStaleIndex,
+    recoveryEpoch,
+  );
+  const lineageMap = useCompareLineage(
+    comparing,
+    base.bundle,
+    target.bundle,
+    demoMode,
+    dataVersion,
+  );
 
   const rows = useMemo(
     () =>
@@ -855,6 +938,7 @@ export const App: React.FC = () => {
       <SearchDialog
         open={searchOpen}
         demoMode={demoMode}
+        dataVersion={dataVersion}
         lang={settings.lang}
         onClose={() => setSearchOpen(false)}
         onPick={(e: SearchEntry) =>
@@ -876,6 +960,7 @@ export const App: React.FC = () => {
         dataRepoUrl={index.data_repo_url}
         upstreamRepoUrl={index.upstream_repo_url}
         demoMode={demoMode}
+        dataVersion={dataVersion}
         onClose={() => setInspectedUnitId(null)}
       />
     </div>

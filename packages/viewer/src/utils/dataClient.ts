@@ -35,9 +35,46 @@ const packCache = new Map<string, ChapterUnitPack>();
 const metaShardCache = new Map<string, UnitMetaShard>();
 let anchorIndexCache: AnchorIndex | null = null;
 let searchCache: SearchEntry[] | null = null;
+let activeDataVersion: string | null = null;
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+/** Derives a deployment-scoped cache key from `SiteIndex` for unhashed JSON endpoints. */
+export function siteDataVersion(
+  index: Pick<SiteIndex, "generated_at" | "default_tree_hash">,
+): string {
+  return `${index.default_tree_hash}-${index.generated_at}`;
+}
+
+export function getActiveDataVersion(): string | null {
+  return activeDataVersion;
+}
+
+export function setActiveDataVersion(version: string | null): void {
+  if (activeDataVersion === version) return;
+  activeDataVersion = version;
+  metaShardCache.clear();
+  anchorIndexCache = null;
+  searchCache = null;
+}
+
+export function resetDataClientCachesForTest(): void {
+  treeCache.clear();
+  structureCache.clear();
+  packCache.clear();
+  metaShardCache.clear();
+  anchorIndexCache = null;
+  searchCache = null;
+  activeDataVersion = null;
+}
+
+function versionedUrl(relPath: string): string {
+  const url = `${DATA_BASE_URL}/${relPath.replace(/^\/+/, "")}`;
+  if (!activeDataVersion) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}v=${encodeURIComponent(activeDataVersion)}`;
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = init ? await fetch(url, init) : await fetch(url);
   if (res.status === 404) {
     throw new DataNotFoundError(`Resource not found: ${url}`);
   }
@@ -51,8 +88,21 @@ async function fetchJson<T>(url: string): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export async function fetchSiteIndex(): Promise<SiteIndex> {
-  return fetchJson<SiteIndex>(`${DATA_BASE_URL}/index.json`);
+export interface FetchSiteIndexOptions {
+  /** Bypass browser and edge caches when recovering a stale open tab after deployment. */
+  bustCache?: boolean;
+}
+
+export async function fetchSiteIndex(options: FetchSiteIndexOptions = {}): Promise<SiteIndex> {
+  const base = `${DATA_BASE_URL}/index.json`;
+  const url = options.bustCache
+    ? `${base}${base.includes("?") ? "&" : "?"}_=${Date.now()}`
+    : base;
+  const index = await fetchJson<SiteIndex>(url, {
+    cache: options.bustCache ? "reload" : "no-cache",
+  });
+  setActiveDataVersion(siteDataVersion(index));
+  return index;
 }
 
 export function getDemoSiteIndex(): SiteIndex {
@@ -171,7 +221,7 @@ export async function fetchAnchorIndex(demoMode: boolean): Promise<AnchorIndex> 
     return DEMO_ANCHORS;
   }
   if (anchorIndexCache) return anchorIndexCache;
-  const anchors = await fetchJson<AnchorIndex>(`${DATA_BASE_URL}/anchors.json`);
+  const anchors = await fetchJson<AnchorIndex>(versionedUrl("anchors.json"));
   anchorIndexCache = anchors;
   return anchors;
 }
@@ -186,7 +236,7 @@ export async function fetchUnitMetaShard(
   let shard = metaShardCache.get(prefix);
   if (!shard) {
     try {
-      shard = await fetchJson<UnitMetaShard>(`${DATA_BASE_URL}/meta/${prefix}.json`);
+      shard = await fetchJson<UnitMetaShard>(versionedUrl(`meta/${prefix}.json`));
       metaShardCache.set(prefix, shard);
     } catch (err) {
       if (err instanceof DataNotFoundError) {
@@ -212,7 +262,7 @@ export async function fetchSearchIndex(demoMode: boolean): Promise<SearchEntry[]
     return DEMO_SEARCH_ENTRIES;
   }
   if (searchCache) return searchCache;
-  const entries = await fetchJson<SearchEntry[]>(`${DATA_BASE_URL}/search.json`);
+  const entries = await fetchJson<SearchEntry[]>(versionedUrl("search.json"));
   searchCache = entries;
   return entries;
 }

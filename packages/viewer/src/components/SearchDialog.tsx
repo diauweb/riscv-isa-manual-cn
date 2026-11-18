@@ -15,6 +15,7 @@ import { cx } from "./ui";
 interface SearchDialogProps {
   open: boolean;
   demoMode: boolean;
+  dataVersion?: string;
   lang?: ReadingLang;
   onClose: () => void;
   onPick: (entry: SearchEntry) => void;
@@ -88,17 +89,20 @@ function pickDisplayAnchor(entry: SearchEntry, queryLower: string): string | und
 export const SearchDialog: React.FC<SearchDialogProps> = ({
   open,
   demoMode,
+  dataVersion = "",
   lang = "zh",
   onClose,
   onPick,
 }) => {
+  const versionKey = demoMode ? "demo" : dataVersion;
   const [query, setQuery] = useState("");
-  const [index, setIndex] = useState<SearchIndexState | null>(null);
+  const [cached, setCached] = useState<{ key: string; state: SearchIndexState } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sel, setSel] = useState(0);
   const [vvHeight, setVvHeight] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const index = cached?.key === versionKey ? cached.state : null;
 
   useBodyScrollLock(open);
 
@@ -123,15 +127,16 @@ export const SearchDialog: React.FC<SearchDialogProps> = ({
     });
     if (index) return;
     let cancelled = false;
+    setError(null);
     fetchSearchIndex(demoMode)
       .then((entries) => {
-        if (!cancelled) setIndex(buildSearchIndex(entries));
+        if (!cancelled) setCached({ key: versionKey, state: buildSearchIndex(entries) });
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       cancelled = true;
     };
-  }, [open, demoMode, index]);
+  }, [open, demoMode, versionKey, index]);
 
   const terms = useMemo(() => tokenizeQuery(query), [query]);
   const normalizedQueryLower = useMemo(

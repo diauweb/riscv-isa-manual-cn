@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSiteData, type BuildSiteResult } from "../build-site/index.ts";
@@ -365,6 +365,11 @@ async function runE2E(root: string, log: Logger): Promise<void> {
       if (!existsSync(join(tmp, "dist", required))) {
         throw new Error(`e2e: expected artifact missing: dist/${required}`);
       }
+    }
+    const builtHtml = readFileSync(join(tmp, "dist", "index.html"), "utf8");
+    const scriptTags = [...builtHtml.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0]);
+    if (scriptTags.length === 0 || scriptTags.some((tag) => !/^<script\s+data-cfasync="false"/i.test(tag))) {
+      throw new Error(`e2e: dist/index.html has <script> without leading data-cfasync="false"`);
     }
     info("e2e: Pages artifact complete", log);
   } finally {

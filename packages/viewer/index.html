@@ -8,10 +8,10 @@
     <meta name="theme-color" content="#fbfbfa" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link
+      id="lxgw-webfont"
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/style.min.css"
       media="print"
-      onload="this.media='all'"
     />
     <noscript>
       <link
@@ -20,9 +20,15 @@
       />
     </noscript>
     <title>RISC-V 指令集手册 · 中英双语</title>
-    <script>
-      // Apply the saved theme before first paint to avoid a light/dark flash.
+    <script data-cfasync="false">
+      // Apply the saved theme before first paint to avoid a light/dark flash,
+      // and promote the async webfont stylesheet without inline `onload=`.
       try {
+        var wf = document.getElementById("lxgw-webfont");
+        if (wf) {
+          if (wf.sheet) wf.media = "all";
+          else wf.addEventListener("load", function () { wf.media = "all"; });
+        }
         var s = JSON.parse(localStorage.getItem("riscv-cn:reader-settings:v1") || "{}");
         var dark = s.theme === "dark" || ((!s.theme || s.theme === "system") && matchMedia("(prefers-color-scheme: dark)").matches);
         if (dark) {
@@ -36,6 +42,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script data-cfasync="false" type="module" src="/src/main.tsx"></script>
   </body>
 </html>

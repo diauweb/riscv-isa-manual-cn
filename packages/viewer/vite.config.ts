@@ -19,6 +19,31 @@ function reloadOnSiteRebuild(stampFile: string): Plugin {
   };
 }
 
+/**
+ * Ensures every `<script>` tag in the built HTML carries `data-cfasync="false"`
+ * as its first attribute (strictly before `src` and `type`), so Cloudflare Rocket
+ * Loader leaves both the synchronous theme bootstrap and Vite ES module bundles
+ * untouched without requiring Rocket Loader to be disabled at the zone level.
+ */
+export function withCloudflareRocketLoaderCompat(html: string): string {
+  return html.replace(/<script\b([^>]*)>/gi, (_full, attrs: string) => {
+    const cleaned = attrs.replace(/\s*\bdata-cfasync=(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    return `<script data-cfasync="false"${cleaned}>`;
+  });
+}
+
+function cloudflareRocketLoaderCompat(): Plugin {
+  return {
+    name: "riscv-cn-cf-rocket-loader-compat",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return withCloudflareRocketLoaderCompat(html);
+      },
+    },
+  };
+}
+
 export default defineConfig(() => {
   const cfg = resolveAppConfig({}, { applyToProcessEnv: false });
 
@@ -35,6 +60,11 @@ export default defineConfig(() => {
     preview: {
       port: cfg.viewerPort,
     },
-    plugins: [react(), tailwindcss(), reloadOnSiteRebuild(siteBuildStampPath(cfg))],
+    plugins: [
+      react(),
+      tailwindcss(),
+      reloadOnSiteRebuild(siteBuildStampPath(cfg)),
+      cloudflareRocketLoaderCompat(),
+    ],
   };
 });

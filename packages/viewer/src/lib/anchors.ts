@@ -1,5 +1,5 @@
 import type { AnchorIndex, VolumeId } from "../types";
-import { fetchAnchorIndex } from "../utils/dataClient";
+import { fetchAnchorIndex, getActiveDataVersion } from "../utils/dataClient";
 
 export interface AnchorTarget {
   volume: VolumeId;
@@ -8,7 +8,11 @@ export interface AnchorTarget {
   anchorId: string;
 }
 
-const anchorMapCache: Partial<Record<"demo" | "live", Promise<Map<string, AnchorTarget>>>> = {};
+const anchorMapCache = new Map<string, Promise<Map<string, AnchorTarget>>>();
+
+export function resetAnchorCacheForTest(): void {
+  anchorMapCache.clear();
+}
 
 function buildMap(index: AnchorIndex): Map<string, AnchorTarget> {
   const map = new Map<string, AnchorTarget>();
@@ -30,21 +34,26 @@ function buildMap(index: AnchorIndex): Map<string, AnchorTarget> {
   return map;
 }
 
-/** Resolve a cross-reference id to the chapter that defines it (lazy, cached). */
+/** Resolve a cross-reference id to the chapter that defines it (lazy, cached per data version). */
 export async function lookupAnchor(
   id: string,
   demoMode: boolean,
 ): Promise<AnchorTarget | null> {
-  const key = demoMode ? "demo" : "live";
-  let pending = anchorMapCache[key];
+  const key = demoMode ? "demo" : `live:${getActiveDataVersion() ?? ""}`;
+  let pending = anchorMapCache.get(key);
   if (!pending) {
+    if (!demoMode) {
+      for (const existing of anchorMapCache.keys()) {
+        if (existing.startsWith("live:")) anchorMapCache.delete(existing);
+      }
+    }
     pending = fetchAnchorIndex(demoMode)
       .then(buildMap)
       .catch((err) => {
-        delete anchorMapCache[key];
+        anchorMapCache.delete(key);
         throw err;
       });
-    anchorMapCache[key] = pending;
+    anchorMapCache.set(key, pending);
   }
   const map = await pending;
   return map.get(id) ?? null;

@@ -23,6 +23,7 @@ interface InspectorProps {
   dataRepoUrl: string;
   upstreamRepoUrl: string;
   demoMode: boolean;
+  dataVersion?: string;
   onClose: () => void;
 }
 
@@ -69,6 +70,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   dataRepoUrl,
   upstreamRepoUrl,
   demoMode,
+  dataVersion = "",
   onClose,
 }) => {
   const [meta, setMeta] = useState<UnitMeta | null>(null);
@@ -92,7 +94,7 @@ export const Inspector: React.FC<InspectorProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [unitId, demoMode]);
+  }, [unitId, demoMode, dataVersion]);
 
   useEffect(() => {
     if (!unitId) return;
